@@ -20,7 +20,7 @@ services:
     mysql-mailcow:
       image: mariadb:10.2
       volumes:
-        - mysql-vol-1:/var/lib/mysql/
+        - /shared/mailcow/volumes/mysql/:/var/lib/mysql/
         - mysql-socket-vol-1:/var/run/mysqld/
         - ./data/conf/mysql/:/etc/mysql/conf.d/:ro
       environment:
@@ -63,6 +63,7 @@ services:
         - SKIP_CLAMD=${SKIP_CLAMD:-n}
       volumes:
         - ./data/conf/clamav/:/etc/clamav/
+        - /shared/mailcow/volumes/clamav/lib:/var/lib/clamav
       dns:
         - ${IPV4_NETWORK:-172.22.1}.254
       networks:
@@ -83,7 +84,7 @@ services:
         - ./data/conf/rspamd/override.d/:/etc/rspamd/override.d
         - ./data/conf/rspamd/local.d/:/etc/rspamd/local.d
         - ./data/conf/rspamd/lua/:/etc/rspamd/lua/:ro
-        - rspamd-vol-1:/var/lib/rspamd
+        - /shared/mailcow/volumes/rspamd/:/var/lib/rspamd
       restart: always
       dns:
         - ${IPV4_NETWORK:-172.22.1}.254
@@ -102,7 +103,7 @@ services:
       volumes:
         - ./data/web:/web:rw
         - ./data/conf/rspamd/dynmaps:/dynmaps:ro
-        - rspamd-vol-1:/var/lib/rspamd
+        - /shared/mailcow/volumes/rspamd/:/var/lib/rspamd
         - mysql-socket-vol-1:/var/run/mysqld/
         - ./data/conf/sogo/:/etc/sogo/
         - ./data/conf/rspamd/meta_exporter:/meta_exporter:ro
@@ -171,11 +172,11 @@ services:
         - ./data/conf/dovecot:/usr/local/etc/dovecot
         - ./data/assets/ssl:/etc/ssl/mail/:ro
         - ./data/conf/sogo/:/etc/sogo/
-        - vmail-vol-1:/var/vmail
-        - vmail-attachments-vol-1:/var/attachments
-        - crypt-vol-1:/mail_crypt/
+        - /shared/mailcow/volumes/vmail/:/var/vmail
+        - /shared/mailcow/volumes/attachments/:/var/attachments
+        - /shared/mailcow/volumes/crypt/:/mail_crypt/
         - ./data/conf/rspamd/custom/:/etc/rspamd/custom
-        - rspamd-vol-1:/var/lib/rspamd
+        - /shared/mailcow/volumes/rspamd/:/var/lib/rspamd
         - mysql-socket-vol-1:/var/run/mysqld/
       environment:
         - LOG_LINES=${LOG_LINES:-9999}
@@ -214,8 +215,8 @@ services:
         - ./data/conf/postfix:/opt/postfix/conf
         - ./data/assets/ssl:/etc/ssl/mail/:ro
         - postfix-vol-1:/var/spool/postfix
-        - crypt-vol-1:/var/lib/zeyple
-        - rspamd-vol-1:/var/lib/rspamd
+        - /shared/mailcow/volumes/crypt/:/var/lib/zeyple
+        - /shared/mailcow/volumes/rspamd/:/var/lib/rspamd
         - mysql-socket-vol-1:/var/run/mysqld/
       environment:
         - LOG_LINES=${LOG_LINES:-9999}
@@ -350,7 +351,7 @@ services:
       build: ./data/Dockerfiles/watchdog
       oom_kill_disable: true
       volumes:
-        - rspamd-vol-1:/var/lib/rspamd
+        - /shared/mailcow/volumes/rspamd/:/var/lib/rspamd
         - mysql-socket-vol-1:/var/run/mysqld/
       restart: always
       environment:
@@ -386,7 +387,7 @@ services:
       volumes:
         - /var/run/docker.sock:/var/run/docker.sock:ro
         - ./data/conf/rspamd/override.d/worker-controller-password.inc:/access.inc:rw
-        - vmail-vol-1:/var/vmail:ro
+        - /shared/mailcow/volumes/vmail:/var/vmail:ro
       networks:
         mailcow-network:
           aliases:
@@ -445,14 +446,7 @@ networks:
         - subnet: ${IPV6_NETWORK:-fd4d:6169:6c63:6f77::/64}
 
 volumes:
-  # Storage for email files
-  vmail-vol-1:
-  # Storage for attachments (deduplicated)
-  vmail-attachments-vol-1:
-  mysql-vol-1:
   mysql-socket-vol-1:
   redis-vol-1:
-  rspamd-vol-1:
   solr-vol-1:
   postfix-vol-1:
-  crypt-vol-1:
