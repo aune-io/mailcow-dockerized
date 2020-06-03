@@ -54,6 +54,10 @@ if (!empty($_GET['id']) && ctype_alnum($_GET['id'])) {
       $data['recipients'] = $recipientsList;
     }
 
+    // Get rspamd score
+    $data['score'] = $mailc['score'];
+    // Get rspamd symbols
+    $data['symbols'] = json_decode($mailc['symbols']);
     // Get text/plain content
     $data['text_plain'] = $mail_parser->getMessageBody('text');
     // Get html content and convert to text
@@ -91,12 +95,27 @@ if (!empty($_GET['id']) && ctype_alnum($_GET['id'])) {
         );
       }
     }
+    if (isset($_GET['eml'])) {
+      $dl_filename = filter_var($data['subject'], FILTER_SANITIZE_STRING);
+      $dl_filename = strlen($dl_filename) > 30 ? substr($dl_filename,0,30) : $dl_filename;
+      header('Pragma: public');
+      header('Expires: 0');
+      header('Cache-Control: must-revalidate, post-check=0, pre-check=0');
+      header('Cache-Control: private', false);
+      header('Content-Type: message/rfc822');
+      header('Content-Disposition: attachment; filename="'. $dl_filename . '.eml";');
+      header('Content-Transfer-Encoding: binary');
+      header('Content-Length: ' . strlen($mailc['msg']));
+      echo $mailc['msg'];
+      exit;
+    }
     if (isset($_GET['att'])) {
       if ($_SESSION['acl']['quarantine_attachments'] == 0) {
         exit(json_encode('Forbidden'));
       }
       $dl_id = intval($_GET['att']);
-      $dl_filename = $data['attachments'][$dl_id][0];
+      $dl_filename = filter_var($data['attachments'][$dl_id][0], FILTER_SANITIZE_STRING);
+      $dl_filename = strlen($dl_filename) > 30 ? substr($dl_filename,0,30) : $dl_filename;
       if (!is_dir($tmpdir . $dl_filename) && file_exists($tmpdir . $dl_filename)) {
         header('Pragma: public');
         header('Expires: 0');
