@@ -545,6 +545,8 @@ networks:
       config:
         - subnet: ${IPV4_NETWORK:-172.22.1}.0/24
         - subnet: ${IPV6_NETWORK:-fd4d:6169:6c63:6f77::/64}
+    driver_opts:
+      com.docker.network.driver.mtu: 1450
 
 volumes:
   mysql-socket-vol-1:
