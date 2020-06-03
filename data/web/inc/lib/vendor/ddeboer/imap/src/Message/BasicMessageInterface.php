@@ -8,8 +8,6 @@ interface BasicMessageInterface extends PartInterface
 {
     /**
      * Get raw message headers.
-     *
-     * @return string
      */
     public function getRawHeaders(): string;
 
@@ -22,8 +20,6 @@ interface BasicMessageInterface extends PartInterface
 
     /**
      * Get message headers.
-     *
-     * @return Headers
      */
     public function getHeaders(): Headers;
 
@@ -31,17 +27,13 @@ interface BasicMessageInterface extends PartInterface
      * Get message id.
      *
      * A unique message id in the form <...>
-     *
-     * @return null|string
      */
-    public function getId();
+    public function getId(): ?string;
 
     /**
      * Get message sender (from headers).
-     *
-     * @return null|EmailAddress
      */
-    public function getFrom();
+    public function getFrom(): ?EmailAddress;
 
     /**
      * Get To recipients.
@@ -87,52 +79,42 @@ interface BasicMessageInterface extends PartInterface
 
     /**
      * Get date (from headers).
-     *
-     * @return null|\DateTimeImmutable
      */
-    public function getDate();
+    public function getDate(): ?\DateTimeImmutable;
 
     /**
      * Get message size (from headers).
      *
-     * @return int
+     * @return null|int|string
      */
     public function getSize();
 
     /**
      * Get message subject (from headers).
-     *
-     * @return string
      */
-    public function getSubject();
+    public function getSubject(): ?string;
 
     /**
      * Get message In-Reply-To (from headers).
-     *
-     * @return array
      */
     public function getInReplyTo(): array;
 
     /**
      * Get message References (from headers).
-     *
-     * @return array
      */
     public function getReferences(): array;
 
     /**
      * Get body HTML.
      *
-     * @return string | null Null if message has no HTML message part
+     * @return null|string Null if message has no HTML message part
      */
-    public function getBodyHtml();
+    public function getBodyHtml(): ?string;
 
     /**
      * Get body text.
-     *
-     * @return string
      */
-    public function getBodyText();
+    public function getBodyText(): ?string;
 
     /**
      * Get attachments (if any) linked to this e-mail.
@@ -143,8 +125,6 @@ interface BasicMessageInterface extends PartInterface
 
     /**
      * Does this message have attachments?
-     *
-     * @return bool
      */
     public function hasAttachments(): bool;
 }

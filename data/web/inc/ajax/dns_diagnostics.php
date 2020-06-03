@@ -23,12 +23,12 @@ if (isset($_GET['domain'])) {
     }
     else {
       echo "No such domain in context";
-      die();
+      exit();
     }
   }
   else {
     echo "Invalid domain name";
-    die();
+    exit();
   }
 }
 
@@ -75,7 +75,7 @@ if (!isset($autodiscover_config['sieve'])) {
 }
 
 // Init records array
-$spf_link = '<a href="http://www.openspf.org/SPF_Record_Syntax" target="_blank">SPF Record Syntax</a><br />';
+$spf_link = '<a href="https://en.wikipedia.org/wiki/Sender_Policy_Framework" target="_blank">SPF Record Syntax</a><br />';
 $dmarc_link = '<a href="https://www.kitterman.com/dmarc/assistant.html" target="_blank">DMARC Assistant</a>';
 
 $records = array();
@@ -94,7 +94,7 @@ if ($_SESSION['mailcow_cc_role'] == "admin") {
     $records[] = array(
       $mailcow_hostname,
       'AAAA',
-      $ip6
+      expand_ipv6($ip6)
     );
     $records[] = array(
       $ptr6,
@@ -335,6 +335,11 @@ foreach ($records as $record) {
       }
       unset($current);
     }
+    elseif ($record[1] == 'AAAA') {
+      foreach ($currents as &$current) {
+        $current['ipv6'] = expand_ipv6($current['ipv6']);
+      }
+    }
   }
 
   if ($record[1] == 'CNAME' && count($currents) == 0) {
@@ -346,8 +351,8 @@ foreach ($records as $record) {
         $currents = array(array('host' => $record[0], 'class' => 'IN', 'type' => 'CNAME', 'target' => $record[2]));
         $aaaa = dns_get_record($record[0], DNS_AAAA);
         $cname = dns_get_record($record[2], DNS_AAAA);
-        if (count($aaaa) == 0 || count($cname) == 0 || $aaaa[0]['ipv6'] != $cname[0]['ipv6']) {
-          $currents[0]['target'] = $aaaa[0]['ipv6'] . ' <sup>1</sup>';
+        if (count($aaaa) == 0 || count($cname) == 0 || expand_ipv6($aaaa[0]['ipv6']) != expand_ipv6($cname[0]['ipv6'])) {
+          $currents[0]['target'] = expand_ipv6($aaaa[0]['ipv6']) . ' <sup>1</sup>';
         }
       }
       else {
@@ -368,7 +373,7 @@ foreach ($records as $record) {
       $record[2] == $spf_link) {
         $state = state_nomatch;
         $rslt = get_spf_allowed_hosts($record[0]);
-        if(in_array($ip, $rslt) && in_array($ip6, $rslt)){
+        if(in_array($ip, $rslt) && in_array(expand_ipv6($ip6), $rslt)){
             $state = state_good;
         }
         $state .= '<br />' . $current[$data_field[$current['type']]].state_optional;
@@ -376,8 +381,8 @@ foreach ($records as $record) {
     elseif ($current['type'] == 'TXT' &&
       stripos($current['txt'], 'v=dkim') === 0 &&
       stripos($record[2], 'v=dkim') === 0) {
-        preg_match('/v=DKIM1;.*k=rsa;.*p=(.*)/i', $current[$data_field[$current['type']]], $dkim_matches_current);
-        preg_match('/v=DKIM1;.*k=rsa;.*p=(.*)/i', $record[2], $dkim_matches_good);
+        preg_match('/v=DKIM1;.*k=rsa;.*p=([^;]*).*/i', $current[$data_field[$current['type']]], $dkim_matches_current);
+        preg_match('/v=DKIM1;.*k=rsa;.*p=([^;]*).*/i', $record[2], $dkim_matches_good);
         if ($dkim_matches_current[1] == $dkim_matches_good[1]) {
           $state = state_good;
         }
@@ -422,6 +427,6 @@ foreach ($records as $record) {
 <?php
 } else {
   echo "Session invalid";
-  die();
+  exit();
 }
 ?>

@@ -1,4 +1,85 @@
 <?php
+function is_valid_regex($exp) {
+  return @preg_match($exp, '') !== false;
+}
+function isset_has_content($var) {
+  if (isset($var) && $var != "") {
+    return true;
+  }
+  else {
+    return false;
+  }
+}
+// Validates ips and cidrs
+function valid_network($network) {
+  if (filter_var($network, FILTER_VALIDATE_IP)) {
+    return true;
+  }
+  $parts = explode('/', $network);
+  if (count($parts) != 2) {
+    return false;
+  }
+  $ip = $parts[0];
+  $netmask = $parts[1];
+  if (!preg_match("/^\d+$/", $netmask)){
+    return false;
+  }
+  $netmask = intval($parts[1]);
+  if ($netmask < 0) {
+    return false;
+  }
+  if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+    return $netmask <= 32;
+  }
+  if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+    return $netmask <= 128;
+  }
+  return false;
+}
+function valid_hostname($hostname) {
+  return filter_var($hostname, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME);
+}
+// Thanks to https://stackoverflow.com/a/49373789
+// Validates exact ip matches and ip-in-cidr, ipv4 and ipv6
+function ip_acl($ip, $networks) {
+  foreach($networks as $network) {
+    if (filter_var($network, FILTER_VALIDATE_IP)) {
+      if ($ip == $network) {
+        return true;
+      }
+      else {
+        continue;
+      }
+    }
+    $ipb = inet_pton($ip);
+    $iplen = strlen($ipb);
+    if (strlen($ipb) < 4) {
+      continue;
+    }
+    $ar = explode('/', $network);
+    $ip1 = $ar[0];
+    $ip1b = inet_pton($ip1);
+    $ip1len = strlen($ip1b);
+    if ($ip1len != $iplen) {
+      continue;
+    }
+    if (count($ar)>1) {
+      $bits=(int)($ar[1]);
+    }
+    else {
+      $bits = $iplen * 8;
+    }
+    for ($c=0; $bits>0; $c++) {
+      $bytemask = ($bits < 8) ? 0xff ^ ((1 << (8-$bits))-1) : 0xff;
+      if (((ord($ipb[$c]) ^ ord($ip1b[$c])) & $bytemask) != 0) {
+        continue 2;
+      }
+      $bits-=8;
+    }
+    return true;
+  }
+  return false;
+}
 function hash_password($password) {
 	$salt_str = bin2hex(openssl_random_pseudo_bytes(8));
 	return "{SSHA256}".base64_encode(hash('sha256', $password . $salt_str, true) . $salt_str);
@@ -248,12 +329,36 @@ function hasMailboxObjectAccess($username, $role, $object) {
   }
 	return false;
 }
+function hasAliasObjectAccess($username, $role, $object) {
+	global $pdo;
+	if (!filter_var(html_entity_decode(rawurldecode($username)), FILTER_VALIDATE_EMAIL) && !ctype_alnum(str_replace(array('_', '.', '-'), '', $username))) {
+		return false;
+	}
+	if ($role != 'admin' && $role != 'domainadmin' && $role != 'user') {
+		return false;
+	}
+	if ($username == $object) {
+		return true;
+	}
+  $stmt = $pdo->prepare("SELECT `domain` FROM `alias` WHERE `address` = :object");
+  $stmt->execute(array(':object' => $object));
+  $row = $stmt->fetch(PDO::FETCH_ASSOC);
+  if (isset($row['domain']) && hasDomainAccess($username, $role, $row['domain'])) {
+    return true;
+  }
+	return false;
+}
 function pem_to_der($pem_key) {
   // Need to remove BEGIN/END PUBLIC KEY
   $lines = explode("\n", trim($pem_key));
   unset($lines[count($lines)-1]);
   unset($lines[0]);
   return base64_decode(implode('', $lines));
+}
+function expand_ipv6($ip) {
+	$hex = unpack("H*hex", inet_pton($ip));
+	$ip = substr(preg_replace("/([A-f0-9]{4})/", "$1:", $hex['hex']), 0, -1);
+	return $ip;
 }
 function generate_tlsa_digest($hostname, $port, $starttls = null) {
   if (!is_valid_domain_name($hostname)) {
@@ -336,7 +441,7 @@ function alertbox_log_parser($_data){
       else {
         $msg = $return['msg'];
       }
-      $log_array[] = array('msg' => json_encode($msg), 'type' => json_encode($type));
+      $log_array[] = array('msg' => $msg, 'type' => json_encode($type));
     }
     if (!empty($log_array)) { 
       return $log_array;
@@ -356,6 +461,12 @@ function verify_hash($hash, $password) {
     $osalt = str_replace($ohash, '', $dhash);
     // Check single salted SHA256 hash against extracted hash
     if (hash_equals(hash('sha256', $password . $osalt, true), $ohash)) {
+      return true;
+    }
+  }
+  elseif (preg_match('/^{PLAIN-MD5}/i', $hash)) {
+    $hash = preg_replace('/^{PLAIN-MD5}/i', '', $hash);
+    if (md5($password) == $hash) {
       return true;
     }
   }
@@ -406,6 +517,7 @@ function check_login($user, $pass) {
 	$user = strtolower(trim($user));
 	$stmt = $pdo->prepare("SELECT `password` FROM `admin`
 			WHERE `superadmin` = '1'
+			AND `active` = '1'
 			AND `username` = :user");
 	$stmt->execute(array(':user' => $user));
 	$rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -472,8 +584,10 @@ function check_login($user, $pass) {
 		}
 	}
 	$stmt = $pdo->prepare("SELECT `password` FROM `mailbox`
+      INNER JOIN domain on mailbox.domain = domain.domain
 			WHERE `kind` NOT REGEXP 'location|thing|group'
-        AND `active`='1'
+        AND `mailbox`.`active`='1'
+        AND `domain`.`active`='1'
         AND `username` = :user");
 	$stmt->execute(array(':user' => $user));
 	$rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -518,14 +632,17 @@ function formatBytes($size, $precision = 2) {
 	return round(pow(1024, $base - floor($base)), $precision) . $suffixes[floor($base)];
 }
 function update_sogo_static_view() {
+  if (getenv('SKIP_SOGO') == "y") {
+    return true;
+  }
   global $pdo;
   global $lang;
   $stmt = $pdo->query("SELECT 'OK' FROM INFORMATION_SCHEMA.TABLES
     WHERE TABLE_NAME = 'sogo_view'");
   $num_results = count($stmt->fetchAll(PDO::FETCH_ASSOC));
   if ($num_results != 0) {
-    $stmt = $pdo->query("REPLACE INTO _sogo_static_view (`c_uid`, `domain`, `c_name`, `c_password`, `c_cn`, `mail`, `aliases`, `ad_aliases`, `kind`, `multiple_bookings`)
-      SELECT `c_uid`, `domain`, `c_name`, `c_password`, `c_cn`, `mail`, `aliases`, `ad_aliases`, `kind`, `multiple_bookings` from sogo_view");
+    $stmt = $pdo->query("REPLACE INTO _sogo_static_view (`c_uid`, `domain`, `c_name`, `c_password`, `c_cn`, `mail`, `aliases`, `ad_aliases`, `ext_acl`, `kind`, `multiple_bookings`)
+      SELECT `c_uid`, `domain`, `c_name`, `c_password`, `c_cn`, `mail`, `aliases`, `ad_aliases`, `ext_acl`, `kind`, `multiple_bookings` from sogo_view");
     $stmt = $pdo->query("DELETE FROM _sogo_static_view WHERE `c_uid` NOT IN (SELECT `username` FROM `mailbox` WHERE `active` = '1');");
   }
   flush_memcached();
@@ -611,6 +728,8 @@ function edit_user_account($_data) {
 function user_get_alias_details($username) {
 	global $lang;
 	global $pdo;
+  $data['direct_aliases'] = false;
+  $data['shared_aliases'] = false;
   if ($_SESSION['mailcow_cc_role'] == "user") {
     $username	= $_SESSION['mailcow_cc_username'];
   }
@@ -618,7 +737,7 @@ function user_get_alias_details($username) {
     return false;
   }
   $data['address'] = $username;
-  $stmt = $pdo->prepare("SELECT IFNULL(GROUP_CONCAT(`address` SEPARATOR ', '), '&#10008;') AS `shared_aliases` FROM `alias`
+  $stmt = $pdo->prepare("SELECT `address` AS `shared_aliases`, `public_comment` FROM `alias`
     WHERE `goto` REGEXP :username_goto
     AND `address` NOT LIKE '@%'
     AND `goto` != :username_goto2
@@ -630,9 +749,12 @@ function user_get_alias_details($username) {
     ));
   $run = $stmt->fetchAll(PDO::FETCH_ASSOC);
   while ($row = array_shift($run)) {
-    $data['shared_aliases'] = $row['shared_aliases'];
+    $data['shared_aliases'][$row['shared_aliases']]['public_comment'] = htmlspecialchars($row['public_comment']);
+
+    //$data['shared_aliases'][] = $row['shared_aliases'];
   }
-  $stmt = $pdo->prepare("SELECT GROUP_CONCAT(`address` SEPARATOR ', ') AS `direct_aliases` FROM `alias`
+
+  $stmt = $pdo->prepare("SELECT `address` AS `direct_aliases`, `public_comment` FROM `alias`
     WHERE `goto` = :username_goto
     AND `address` NOT LIKE '@%'
     AND `address` != :username_address");
@@ -640,28 +762,29 @@ function user_get_alias_details($username) {
     array(
     ':username_goto' => $username,
     ':username_address' => $username
-    ));
+  ));
   $run = $stmt->fetchAll(PDO::FETCH_ASSOC);
   while ($row = array_shift($run)) {
-    $data['direct_aliases'][] = $row['direct_aliases'];
+    $data['direct_aliases'][$row['direct_aliases']]['public_comment'] = htmlspecialchars($row['public_comment']);
   }
-  $stmt = $pdo->prepare("SELECT GROUP_CONCAT(local_part, '@', alias_domain SEPARATOR ', ') AS `ad_alias` FROM `mailbox`
+  $stmt = $pdo->prepare("SELECT CONCAT(local_part, '@', alias_domain) AS `ad_alias`, `alias_domain` FROM `mailbox`
     LEFT OUTER JOIN `alias_domain` on `target_domain` = `domain`
       WHERE `username` = :username ;");
   $stmt->execute(array(':username' => $username));
   $run = $stmt->fetchAll(PDO::FETCH_ASSOC);
   while ($row = array_shift($run)) {
-    $data['direct_aliases'][] = $row['ad_alias'];
+    if (empty($row['ad_alias'])) {
+      continue;
+    }
+    $data['direct_aliases'][$row['ad_alias']]['public_comment'] = '↪ ' . $row['alias_domain'];
   }
-  $data['direct_aliases'] = implode(', ', array_filter($data['direct_aliases']));
-  $data['direct_aliases'] = empty($data['direct_aliases']) ? '&#10008;' : $data['direct_aliases'];
   $stmt = $pdo->prepare("SELECT IFNULL(GROUP_CONCAT(`send_as` SEPARATOR ', '), '&#10008;') AS `send_as` FROM `sender_acl` WHERE `logged_in_as` = :username AND `send_as` NOT LIKE '@%';");
   $stmt->execute(array(':username' => $username));
   $run = $stmt->fetchAll(PDO::FETCH_ASSOC);
   while ($row = array_shift($run)) {
     $data['aliases_also_send_as'] = $row['send_as'];
   }
-  $stmt = $pdo->prepare("SELECT IFNULL(CONCAT(GROUP_CONCAT(DISTINCT `send_as` SEPARATOR ', '), ', ', GROUP_CONCAT(DISTINCT CONCAT('@',`alias_domain`) SEPARATOR ', ')), '&#10008;') AS `send_as` FROM `sender_acl` LEFT JOIN `alias_domain` ON `alias_domain`.`target_domain` =  TRIM(LEADING '@' FROM `send_as`) WHERE `logged_in_as` = :username AND `send_as` LIKE '@%';");
+  $stmt = $pdo->prepare("SELECT CONCAT_WS(', ', IFNULL(GROUP_CONCAT(DISTINCT `send_as` SEPARATOR ', '), '&#10008;'), GROUP_CONCAT(DISTINCT CONCAT('@',`alias_domain`) SEPARATOR ', ')) AS `send_as` FROM `sender_acl` LEFT JOIN `alias_domain` ON `alias_domain`.`target_domain` =  TRIM(LEADING '@' FROM `send_as`) WHERE `logged_in_as` = :username AND `send_as` LIKE '@%';");
   $stmt->execute(array(':username' => $username));
   $run = $stmt->fetchAll(PDO::FETCH_ASSOC);
   while ($row = array_shift($run)) {
@@ -679,7 +802,7 @@ function is_valid_domain_name($domain_name) {
 	if (empty($domain_name)) {
 		return false;
 	}
-	$domain_name = idn_to_ascii($domain_name);
+	$domain_name = idn_to_ascii($domain_name, 0, INTL_IDNA_VARIANT_UTS46);
 	return (preg_match("/^([a-z\d](-*[a-z\d])*)(\.([a-z\d](-*[a-z\d])*))*$/i", $domain_name)
 		   && preg_match("/^.{1,253}$/", $domain_name)
 		   && preg_match("/^[^\.]{1,63}(\.[^\.]{1,63})*$/", $domain_name));
@@ -1028,9 +1151,10 @@ function verify_tfa_login($username, $token) {
   case "u2f":
     try {
       $reg = $u2f->doAuthenticate(json_decode($_SESSION['authReq']), get_u2f_registrations($username), json_decode($token));
-      $stmt = $pdo->prepare("UPDATE `tfa` SET `counter` = ? WHERE `id` = ?");
-      $stmt->execute(array($reg->counter, $reg->id));
-      $_SESSION['tfa_id'] = $reg->id;
+      $stmt = $pdo->prepare("SELECT `id` FROM `tfa` WHERE `keyHandle` = ?");
+      $stmt->execute(array($reg->keyHandle));
+      $row_key_id = $stmt->fetch(PDO::FETCH_ASSOC);
+      $_SESSION['tfa_id'] = $row_key_id['id'];
       $_SESSION['authReq'] = null;
       $_SESSION['return'][] =  array(
         'type' => 'success',
@@ -1102,7 +1226,7 @@ function verify_tfa_login($username, $token) {
 	}
   return false;
 }
-function admin_api($action, $data = null) {
+function admin_api($access, $action, $data = null) {
 	global $pdo;
 	global $lang;
 	if ($_SESSION['mailcow_cc_role'] != "admin") {
@@ -1113,81 +1237,183 @@ function admin_api($action, $data = null) {
 		);
 		return false;
 	}
-	switch ($action) {
-		case "edit":
-      $regen_key = $data['admin_api_regen_key'];
-      $active = (isset($data['active'])) ? 1 : 0;
-      $allow_from = array_map('trim', preg_split( "/( |,|;|\n)/", $data['allow_from']));
-      foreach ($allow_from as $key => $val) {
-        if (!filter_var($val, FILTER_VALIDATE_IP)) {
-          $_SESSION['return'][] =  array(
-            'type' => 'warning',
-            'log' => array(__FUNCTION__, $data),
-            'msg' => array('ip_invalid', htmlspecialchars($allow_from[$key]))
-          );
-          unset($allow_from[$key]);
-          continue;
-        }
+  if ($access !== "ro" && $access !== "rw") {
+		$_SESSION['return'][] =  array(
+			'type' => 'danger',
+      'log' => array(__FUNCTION__),
+			'msg' => 'invalid access type'
+		);
+		return false;
+  }
+  if ($action == "edit") {
+    $active = (!empty($data['active'])) ? 1 : 0;
+    $skip_ip_check = (isset($data['skip_ip_check'])) ? 1 : 0;
+    $allow_from = array_map('trim', preg_split( "/( |,|;|\n)/", $data['allow_from']));
+    foreach ($allow_from as $key => $val) {
+      if (empty($val)) {
+        unset($allow_from[$key]);
+        continue;
       }
-      $allow_from = implode(',', array_unique(array_filter($allow_from)));
-      if (empty($allow_from)) {
+      if (valid_network($val) !== true) {
         $_SESSION['return'][] =  array(
-          'type' => 'danger',
+          'type' => 'warning',
           'log' => array(__FUNCTION__, $data),
-          'msg' => 'ip_list_empty'
+          'msg' => array('ip_invalid', htmlspecialchars($allow_from[$key]))
         );
-        return false;
+        unset($allow_from[$key]);
+        continue;
       }
-      $api_key = implode('-', array(
-        strtoupper(bin2hex(random_bytes(3))),
-        strtoupper(bin2hex(random_bytes(3))),
-        strtoupper(bin2hex(random_bytes(3))),
-        strtoupper(bin2hex(random_bytes(3))),
-        strtoupper(bin2hex(random_bytes(3)))
+    }
+    $allow_from = implode(',', array_unique(array_filter($allow_from)));
+    if (empty($allow_from) && $skip_ip_check == 0) {
+      $_SESSION['return'][] =  array(
+        'type' => 'danger',
+        'log' => array(__FUNCTION__, $data),
+        'msg' => 'ip_list_empty'
+      );
+      return false;
+    }
+    $api_key = implode('-', array(
+      strtoupper(bin2hex(random_bytes(3))),
+      strtoupper(bin2hex(random_bytes(3))),
+      strtoupper(bin2hex(random_bytes(3))),
+      strtoupper(bin2hex(random_bytes(3))),
+      strtoupper(bin2hex(random_bytes(3)))
+    ));
+    $stmt = $pdo->query("SELECT `api_key` FROM `api` WHERE `access` = '" . $access . "'");
+    $num_results = count($stmt->fetchAll(PDO::FETCH_ASSOC));
+    if (empty($num_results)) {
+      $stmt = $pdo->prepare("INSERT INTO `api` (`api_key`, `skip_ip_check`, `active`, `allow_from`, `access`)
+        VALUES (:api_key, :skip_ip_check, :active, :allow_from, :access);");
+      $stmt->execute(array(
+        ':api_key' => $api_key,
+        ':skip_ip_check' => $skip_ip_check,
+        ':active' => $active,
+        ':allow_from' => $allow_from,
+        ':access' => $access
       ));
-      $stmt = $pdo->query("SELECT `api_key` FROM `api`");
-      $num_results = count($stmt->fetchAll(PDO::FETCH_ASSOC));
-      if (empty($num_results)) {
-        $stmt = $pdo->prepare("INSERT INTO `api` (`api_key`, `active`, `allow_from`)
-          VALUES (:api_key, :active, :allow_from);");
+    }
+    else {
+      if ($skip_ip_check == 0) {
+        $stmt = $pdo->prepare("UPDATE `api` SET `skip_ip_check` = :skip_ip_check,
+          `active` = :active,
+          `allow_from` = :allow_from
+            WHERE `access` = :access;");
         $stmt->execute(array(
-          ':api_key' => $api_key,
           ':active' => $active,
-          ':allow_from' => $allow_from
+          ':skip_ip_check' => $skip_ip_check,
+          ':allow_from' => $allow_from,
+          ':access' => $access
         ));
       }
       else {
-        $stmt = $pdo->prepare("UPDATE `api` SET `active` = :active, `allow_from` = :allow_from ;");
+        $stmt = $pdo->prepare("UPDATE `api` SET `skip_ip_check` = :skip_ip_check,
+          `active` = :active
+            WHERE `access` = :access;");
         $stmt->execute(array(
           ':active' => $active,
-          ':allow_from' => $allow_from
+          ':skip_ip_check' => $skip_ip_check,
+          ':access' => $access
         ));
       }
-    break;
-    case "regen_key":
-      $api_key = implode('-', array(
-        strtoupper(bin2hex(random_bytes(3))),
-        strtoupper(bin2hex(random_bytes(3))),
-        strtoupper(bin2hex(random_bytes(3))),
-        strtoupper(bin2hex(random_bytes(3))),
-        strtoupper(bin2hex(random_bytes(3)))
-      ));
-      $stmt = $pdo->prepare("UPDATE `api` SET `api_key` = :api_key");
-      $stmt->execute(array(
-        ':api_key' => $api_key
-      ));
-    break;
-    case "get":
-      $stmt = $pdo->query("SELECT * FROM `api`");
-      $apidata = $stmt->fetch(PDO::FETCH_ASSOC);
-      return $apidata;
-    break;
+    }
+  }
+  elseif ($action == "regen_key") {
+    $api_key = implode('-', array(
+      strtoupper(bin2hex(random_bytes(3))),
+      strtoupper(bin2hex(random_bytes(3))),
+      strtoupper(bin2hex(random_bytes(3))),
+      strtoupper(bin2hex(random_bytes(3))),
+      strtoupper(bin2hex(random_bytes(3)))
+    ));
+    $stmt = $pdo->prepare("UPDATE `api` SET `api_key` = :api_key WHERE `access` = :access");
+    $stmt->execute(array(
+      ':api_key' => $api_key,
+      ':access' => $access
+    ));
+  }
+  elseif ($action == "get") {
+    $stmt = $pdo->query("SELECT * FROM `api` WHERE `access` = '" . $access . "'");
+    $apidata = $stmt->fetch(PDO::FETCH_ASSOC);
+    $apidata['allow_from'] = str_replace(',', PHP_EOL, $apidata['allow_from']);
+    return $apidata;
   }
 	$_SESSION['return'][] =  array(
 		'type' => 'success',
     'log' => array(__FUNCTION__, $data),
 		'msg' => 'admin_api_modified'
 	);
+}
+function license($action, $data = null) {
+	global $pdo;
+	global $redis;
+	global $lang;
+	if ($_SESSION['mailcow_cc_role'] != "admin") {
+		$_SESSION['return'][] =  array(
+			'type' => 'danger',
+      'log' => array(__FUNCTION__),
+			'msg' => 'access_denied'
+		);
+		return false;
+	}
+	switch ($action) {
+		case "verify":
+      // Keep result until revalidate button is pressed or session expired
+      $stmt = $pdo->query("SELECT `version` FROM `versions` WHERE `application` = 'GUID'");
+      $versions = $stmt->fetch(PDO::FETCH_ASSOC);
+      $post = array('guid' => $versions['version']);
+      $curl = curl_init('https://verify.mailcow.email');
+      curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+      curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 10);
+      curl_setopt($curl, CURLOPT_POSTFIELDS, $post);
+      $response = curl_exec($curl);
+      curl_close($curl);
+      $json_return = json_decode($response, true);
+      if ($response && $json_return) {
+        if ($json_return['response'] === "ok") {
+          $_SESSION['gal']['valid'] = "true";
+          $_SESSION['gal']['c'] = $json_return['c'];
+          $_SESSION['gal']['s'] = $json_return['s'];
+          if ($json_return['m'] == 'NoMoore') {
+            $_SESSION['gal']['m'] = '🐄';
+          }
+          else {
+            $_SESSION['gal']['m'] = str_repeat('🐄', substr_count($json_return['m'], 'o'));
+          }
+        }
+        elseif ($json_return['response'] === "invalid") {
+          $_SESSION['gal']['valid'] = "false";
+          $_SESSION['gal']['c'] = $lang['mailbox']['no'];
+          $_SESSION['gal']['s'] = $lang['mailbox']['no'];
+          $_SESSION['gal']['m'] = $lang['mailbox']['no'];
+        }
+      }
+      else {
+        $_SESSION['gal']['valid'] = "false";
+        $_SESSION['gal']['c'] = $lang['danger']['temp_error'];
+        $_SESSION['gal']['s'] = $lang['danger']['temp_error'];
+        $_SESSION['gal']['m'] = $lang['danger']['temp_error'];
+      }
+      try {
+        // json_encode needs "true"/"false" instead of true/false, to not encode it to 0 or 1
+        $redis->Set('LICENSE_STATUS_CACHE', json_encode($_SESSION['gal']));
+      }
+      catch (RedisException $e) {
+        $_SESSION['return'][] = array(
+          'type' => 'danger',
+          'log' => array(__FUNCTION__, $_action, $_data_log),
+          'msg' => array('redis_error', $e)
+        );
+        return false;
+      }
+      return $_SESSION['gal']['valid'];
+    break;
+    case "guid":
+      $stmt = $pdo->query("SELECT `version` FROM `versions` WHERE `application` = 'GUID'");
+      $versions = $stmt->fetch(PDO::FETCH_ASSOC);
+      return $versions['version'];
+    break;
+  }
 }
 function rspamd_ui($action, $data = null) {
 	global $lang;
@@ -1470,34 +1696,72 @@ function solr_status() {
   $endpoint = 'http://solr:8983/solr/admin/cores';
   $params = array(
     'action' => 'STATUS',
-    'core' => 'dovecot',
+    'core' => 'dovecot-fts',
     'indexInfo' => 'true'
   );
   $url = $endpoint . '?' . http_build_query($params);
   curl_setopt($curl, CURLOPT_URL, $url);
   curl_setopt($curl, CURLOPT_RETURNTRANSFER, 1);
   curl_setopt($curl, CURLOPT_POST, 0);
-  curl_setopt($curl, CURLOPT_TIMEOUT, 20);
-  $response = curl_exec($curl);
-  if ($response === false) {
+  curl_setopt($curl, CURLOPT_TIMEOUT, 10);
+  $response_core = curl_exec($curl);
+  if ($response_core === false) {
     $err = curl_error($curl);
     curl_close($curl);
-    // logger(array('return' => array(
-      // 'type' => 'danger',
-      // 'log' => array(__FUNCTION__, $action, $service_name, $attr1, $attr2, $extra_headers),
-      // 'msg' => $err,
-    // )));
     return false;
   }
   else {
     curl_close($curl);
-    // logger(array('return' => array(
-      // 'type' => 'success',
-      // 'log' => array(__FUNCTION__, $action, $service_name, $attr1, $attr2, $extra_headers),
-    // )));
-    $status = json_decode($response, true);
-    return (!empty($status['status']['dovecot'])) ? $status['status']['dovecot'] : false;
+    $curl = curl_init();
+    $status_core = json_decode($response_core, true);
+    $url = 'http://solr:8983/solr/admin/info/system';
+    curl_setopt($curl, CURLOPT_URL, $url);
+    curl_setopt($curl, CURLOPT_RETURNTRANSFER, 1);
+    curl_setopt($curl, CURLOPT_POST, 0);
+    curl_setopt($curl, CURLOPT_TIMEOUT, 10);
+    $response_sysinfo = curl_exec($curl);
+    if ($response_sysinfo === false) {
+      $err = curl_error($curl);
+      curl_close($curl);
+      return false;
+    }
+    else {
+      curl_close($curl);
+      $status_sysinfo = json_decode($response_sysinfo, true);
+      $status = array_merge($status_core, $status_sysinfo);
+      return (!empty($status['status']['dovecot-fts']) && !empty($status['jvm']['memory'])) ? $status : false;
+    }
+    return (!empty($status['status']['dovecot-fts'])) ? $status['status']['dovecot-fts'] : false;
   }
   return false;
 }
+
+function cleanupJS($ignore = '', $folder = '/tmp/*.js') {
+  $now = time();
+  foreach (glob($folder) as $filename) {
+    if(strpos($filename, $ignore) !== false) {
+      continue;
+    }
+    if (is_file($filename)) {
+      if ($now - filemtime($filename) >= 60 * 60) {
+        unlink($filename);
+      }
+    }
+  }
+}
+
+function cleanupCSS($ignore = '', $folder = '/tmp/*.css') {
+  $now = time();
+  foreach (glob($folder) as $filename) {
+    if(strpos($filename, $ignore) !== false) {
+      continue;
+    }
+    if (is_file($filename)) {
+      if ($now - filemtime($filename) >= 60 * 60) {
+        unlink($filename);
+      }
+    }
+  }
+}
+
 ?>
